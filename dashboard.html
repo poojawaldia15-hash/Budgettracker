@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ledger — Dashboard</title>
+<link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<section id="app-screen" class="app" hidden>
+  <header class="app-header">
+    <div class="header-left">
+      <p class="cover-mark">Household Ledger</p>
+      <h1 class="page-title">Dashboard</h1>
+    </div>
+    <div class="header-right">
+      <select id="month-select"></select>
+      <span id="user-email" class="muted"></span>
+      <button id="logout-btn" class="ghost-btn">Sign out</button>
+    </div>
+  </header>
+
+  <main class="app-grid">
+
+    <!-- Summary cards -->
+    <section class="summary-row">
+      <div class="summary-card">
+        <span class="summary-label">Income this month</span>
+        <span id="summary-income" class="summary-amount income">$0.00</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Expenses this month</span>
+        <span id="summary-expenses" class="summary-amount expense">$0.00</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Overall balance</span>
+        <span id="summary-balance" class="summary-amount">$0.00</span>
+      </div>
+    </section>
+
+    <!-- Left column -->
+    <div class="col-left">
+
+      <section class="panel" id="entry-panel">
+        <h2>Add an entry</h2>
+        <form id="entry-form">
+          <div class="row">
+            <button type="button" class="toggle-btn active" data-type="expense" id="type-expense">Expense</button>
+            <button type="button" class="toggle-btn" data-type="income" id="type-income">Income</button>
+          </div>
+          <label for="amount">Amount</label>
+          <input type="number" id="amount" step="0.01" min="0" required placeholder="0.00">
+          <label for="category">Category</label>
+          <select id="category" required></select>
+          <label for="entry-date">Date</label>
+          <input type="date" id="entry-date" required>
+          <label for="note">Note (optional)</label>
+          <input type="text" id="note" maxlength="120" placeholder="What was this for?">
+          <button type="submit" class="primary-btn">Record entry</button>
+        </form>
+      </section>
+
+      <section class="panel" id="budgets-panel">
+        <div class="panel-head"><h2>Monthly budgets</h2><button id="add-budget-btn" class="link-btn">+ Set a limit</button></div>
+        <div id="budgets-list" class="budgets-list"></div>
+      </section>
+
+      <section class="panel" id="recurring-panel">
+        <div class="panel-head"><h2>Recurring</h2><button id="add-recurring-btn" class="link-btn">+ Add recurring</button></div>
+        <div id="recurring-list" class="recurring-list"></div>
+      </section>
+
+      <section class="panel" id="goals-panel">
+        <div class="panel-head"><h2>Savings goals</h2><button id="add-goal-btn" class="link-btn">+ Add goal</button></div>
+        <div id="goals-list" class="goals-list"></div>
+      </section>
+
+    </div>
+
+    <!-- Right column -->
+    <div class="col-right">
+
+      <section class="panel" id="insights-panel">
+        <h2>Insights</h2>
+        <div id="insights-list" class="insights-list"></div>
+      </section>
+
+      <section class="panel" id="charts-panel">
+        <h2>This month</h2>
+        <div class="charts-grid">
+          <div class="chart-box">
+            <p class="chart-caption">Spending by category</p>
+            <canvas id="category-chart" height="220"></canvas>
+          </div>
+          <div class="chart-box">
+            <p class="chart-caption">Income vs. expenses, last 6 months</p>
+            <canvas id="trend-chart" height="220"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="history-panel">
+        <div class="panel-head"><h2>Entries</h2><span id="history-count" class="muted"></span></div>
+
+        <div class="filters-bar">
+          <input type="text" id="filter-search" placeholder="Search notes or categories…">
+          <select id="filter-category"><option value="">All categories</option></select>
+          <input type="date" id="filter-from" title="From date">
+          <input type="date" id="filter-to" title="To date">
+          <button type="button" id="filter-clear" class="ghost-btn">Clear</button>
+        </div>
+
+        <table class="ledger-table">
+          <thead><tr><th>Date</th><th>Category</th><th>Note</th><th class="num">Amount</th><th></th></tr></thead>
+          <tbody id="history-body">
+            <tr id="history-empty"><td colspan="5" class="muted">No entries yet.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+    </div>
+  </main>
+</section>
+
+<!-- Edit entry dialog -->
+<dialog id="edit-dialog">
+  <form id="edit-form">
+    <h3>Edit entry</h3>
+    <label for="edit-amount">Amount</label>
+    <input type="number" id="edit-amount" step="0.01" min="0" required>
+    <label for="edit-category">Category</label>
+    <select id="edit-category" required></select>
+    <label for="edit-date">Date</label>
+    <input type="date" id="edit-date" required>
+    <label for="edit-note">Note</label>
+    <input type="text" id="edit-note" maxlength="120">
+    <div class="dialog-actions">
+      <button type="button" id="edit-cancel" class="ghost-btn">Cancel</button>
+      <button type="submit" class="primary-btn">Save changes</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Set budget dialog -->
+<dialog id="budget-dialog">
+  <form id="budget-form">
+    <h3>Set a category limit</h3>
+    <label for="budget-category">Category</label>
+    <select id="budget-category" required></select>
+    <label for="budget-limit">Monthly limit</label>
+    <input type="number" id="budget-limit" step="0.01" min="0" required>
+    <div class="dialog-actions">
+      <button type="button" id="budget-cancel" class="ghost-btn">Cancel</button>
+      <button type="submit" class="primary-btn">Save limit</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Recurring dialog -->
+<dialog id="recurring-dialog">
+  <form id="recurring-form">
+    <h3>Add a recurring entry</h3>
+    <div class="row">
+      <button type="button" class="toggle-btn active" data-type="expense" id="rec-type-expense">Expense</button>
+      <button type="button" class="toggle-btn" data-type="income" id="rec-type-income">Income</button>
+    </div>
+    <label for="recurring-desc">Description</label>
+    <input type="text" id="recurring-desc" maxlength="60" placeholder="Rent, Netflix, Paycheck…" required>
+    <label for="recurring-category">Category</label>
+    <select id="recurring-category" required></select>
+    <label for="recurring-amount">Amount</label>
+    <input type="number" id="recurring-amount" step="0.01" min="0" required>
+    <label for="recurring-day">Day of month</label>
+    <input type="number" id="recurring-day" min="1" max="28" value="1" required>
+    <div class="dialog-actions">
+      <button type="button" id="recurring-cancel" class="ghost-btn">Cancel</button>
+      <button type="submit" class="primary-btn">Save recurring entry</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Goal dialog -->
+<dialog id="goal-dialog">
+  <form id="goal-form">
+    <h3>Add a savings goal</h3>
+    <label for="goal-name">Goal name</label>
+    <input type="text" id="goal-name" maxlength="60" placeholder="Emergency fund, Vacation…" required>
+    <label for="goal-target">Target amount</label>
+    <input type="number" id="goal-target" step="0.01" min="0" required>
+    <div class="dialog-actions">
+      <button type="button" id="goal-cancel" class="ghost-btn">Cancel</button>
+      <button type="submit" class="primary-btn">Save goal</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Contribute to goal dialog -->
+<dialog id="contribute-dialog">
+  <form id="contribute-form">
+    <h3>Add funds</h3>
+    <label for="contribute-amount">Amount to add</label>
+    <input type="number" id="contribute-amount" step="0.01" min="0" required>
+    <div class="dialog-actions">
+      <button type="button" id="contribute-cancel" class="ghost-btn">Cancel</button>
+      <button type="submit" class="primary-btn">Add funds</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="firebase-config.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>

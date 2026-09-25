@@ -1,41 +1,46 @@
 # Household Ledger
 
 A shared budget tracker: one password gets anyone in, everyone sees the
-same running balance, categorized entries, monthly limits, and charts.
-Static site (no build step) — Firebase handles login and storage.
+same running balance, categorized entries, budgets, recurring bills,
+savings goals, and charts. Static site (no build step) — Firebase
+handles login and storage.
+
+## Files
+
+- `index.html` — redirects to `login.html` (so the root URL still works)
+- `login.html` / `auth.js` — the sign-in page
+- `dashboard.html` / `dashboard.js` — the app itself (protected; redirects to `login.html` if you're not signed in)
+- `style.css` — shared styles for both pages
+- `firebase-config.js` — your Firebase project settings (edit this one)
 
 ## How the "shared password" works
 
 Firebase doesn't have a native "one password for everyone" mode, so this
 app fakes it safely: behind the scenes there's a single Firebase Auth
-account (a fixed email address you'll set once), and the password field
-on the login screen signs everyone into *that* account. Nobody sees the
-email address — they just type the password. Firestore's security rules
-then only allow reads/writes from someone who's signed in, so knowing
-the password is what gets you in.
+account (a fixed email address you'll set once), and the login screen
+signs everyone into *that* account — the email field is shown and
+pre-filled for convenience, but it should stay the same for everyone.
+Firestore's security rules only allow reads/writes from someone who's
+signed in, so knowing the password is what gets you in.
 
 To change access later, change that one account's password in the
 Firebase console — no code changes needed.
 
 ## 1. Create a Firebase project
 
-1. Go to [console.firebase.google.com](https://console.firebase.google.com) → **Add project** → give it a name → finish the wizard (you can skip Google Analytics).
-2. In the project, click the **Web** icon (`</>`) to register a new web app. Name it anything, skip Firebase Hosting.
+1. Go to [console.firebase.google.com](https://console.firebase.google.com) → **Add project** → finish the wizard.
+2. Click the **Web** icon (`</>`) to register a web app, skip Hosting.
 3. Copy the `firebaseConfig` object it shows you.
 
 ## 2. Turn on Authentication
 
-1. In the left sidebar: **Build → Authentication → Get started**.
-2. Under **Sign-in method**, enable **Email/Password**.
-3. Go to the **Users** tab → **Add user**.
-   - Email: pick anything you like, e.g. `household@ledger.local` (doesn't need to be real).
-   - Password: this is the password you'll hand out to everyone with access.
-4. If you used a different email than `household@ledger.local`, note it — you'll need it in step 4.
+1. **Build → Authentication → Get started** → enable **Email/Password**.
+2. **Users** tab → **Add user**. Pick any email (e.g. `household@ledger.local`) and a password — that password is what you hand out to everyone with access.
 
-## 3. Turn on Firestore (the database)
+## 3. Turn on Firestore
 
-1. **Build → Firestore Database → Create database**. Choose a region close to you, start in **production mode**.
-2. Go to the **Rules** tab and replace the contents with:
+1. **Build → Firestore Database → Create database** → production mode.
+2. **Rules** tab → replace with:
 
    ```
    rules_version = '2';
@@ -47,37 +52,32 @@ Firebase console — no code changes needed.
      }
    }
    ```
-
-   This means: only someone who successfully signed in (i.e. knows the
-   password) can read or write any data. Click **Publish**.
+   Click **Publish**. (This covers every collection the app uses — transactions, budgets, recurring, goals — automatically.)
 
 ## 4. Configure the app
 
 Open `firebase-config.js` and:
-
 1. Paste in the `firebaseConfig` values from step 1.
-2. Set `SHARED_LOGIN_EMAIL` to match the email you created in step 2.
+2. Set `SHARED_LOGIN_EMAIL` to match the email from step 2.
 
-## 5. Put it on GitHub Pages
+## 5. Deploy to GitHub Pages
 
-1. Create a new GitHub repository and push these four files to it (`index.html`, `style.css`, `app.js`, `firebase-config.js`).
-2. In the repo: **Settings → Pages** → under **Build and deployment**, set **Source** to "Deploy from a branch", branch `main`, folder `/ (root)` → **Save**.
-3. GitHub gives you a URL like `https://yourusername.github.io/your-repo/` — that's your live ledger.
+Push all the files to a repo, then **Settings → Pages** → Source: "Deploy from a branch", branch `main`, folder `/ (root)`. Your site is live at `https://yourusername.github.io/your-repo/`.
 
-Because this repo will contain your Firebase project ID and API key in
-plain text, keep the repo **private** unless you're comfortable with
-that being public (the API key alone doesn't grant access — Firestore
-rules do that — but there's no reason to expose it needlessly).
+Keep the repo **private** if you'd rather not expose your Firebase project ID and API key publicly (the key alone doesn't grant data access — the Firestore rule does — but there's no reason to expose it needlessly).
 
 ## Using it
 
-- **Add an entry**: pick expense or income, amount, category, date, optional note.
-- **Set a limit**: under "Monthly budgets," set a cap per category; the bar fills up (and turns rust-red) as that category's spending approaches or passes it, recalculated for whichever month you're viewing.
-- **Charts**: a breakdown of the selected month's spending by category, and an income-vs-expenses view for the trailing six months.
-- **Edit or delete**: every row in the entries table has Edit/Delete.
-- Everyone signed in sees the same data, live — no separate accounts, one shared ledger.
+- **Summary cards**: income and expenses for the month you're viewing, plus your all-time balance.
+- **Add an entry**: expense or income, amount, category, date, optional note.
+- **Budgets**: set a monthly cap per category; the bar fills up (and turns red) as spending approaches or passes it.
+- **Recurring**: add a bill or paycheck with a day of the month — the app auto-adds it as a real entry once that day arrives each month. Pause or delete anytime.
+- **Savings goals**: set a target, add funds toward it whenever, watch the bar fill.
+- **Insights**: automatically compares this month's spending per category to last month's, biggest movers first.
+- **Filters**: search entries by note/category text, filter by category, or set a date range that overrides the month view.
+- **Charts**: category breakdown for the selected month, and a 6-month income-vs-expenses trend.
+- Everyone signed in sees the same data, live.
 
 ## Customizing categories
 
-Edit the `EXPENSE_CATEGORIES`, `INCOME_CATEGORIES`, and `CATEGORY_COLORS`
-constants at the top of `app.js`.
+Edit `EXPENSE_CATEGORIES`, `INCOME_CATEGORIES`, and `CATEGORY_COLORS` at the top of `dashboard.js`.

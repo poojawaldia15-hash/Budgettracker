@@ -1,0 +1,402 @@
+/* ---------------------------------------------------------------
+   Household Ledger — dashboard logic
+--------------------------------------------------------------- */
+
+const EXPENSE_CATEGORIES = ["Groceries", "Housing", "Utilities", "Transport", "Dining Out", "Entertainment", "Health", "Shopping", "Subscriptions", "Travel", "Other"];
+const INCOME_CATEGORIES = ["Salary", "Freelance", "Gift", "Interest", "Other Income"];
+const ALL_CATEGORIES = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
+
+const CATEGORY_COLORS = {
+  "Groceries": "#5B8A6E", "Housing": "#3F6B7A", "Utilities": "#7A6A9A", "Transport": "#B98B2E",
+  "Dining Out": "#A34A32", "Entertainment": "#C2694C", "Health": "#4E8C8C", "Shopping": "#8C6B4E",
+  "Subscriptions": "#6B7A4E", "Travel": "#3F5B7A", "Other": "#7A7A72"
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+const $ = (id) => document.getElementById(id);
+const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2);
+const monthLabel = (ym) => { const [y, m] = ym.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" }); };
+const thisMonthStr = () => new Date().toISOString().slice(0, 7);
+const prevMonthStr = (ym) => { const [y, m] = ym.split("-").map(Number); const d = new Date(y, m - 2, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
+const fillSelect = (select, list) => { select.innerHTML = list.map((c) => `<option value="${c}">${c}</option>`).join(""); };
+
+let allTransactions = [], allBudgets = {}, allRecurring = [], allGoals = [];
+let selectedMonth = null, currentType = "expense", recCurrentType = "expense";
+let categoryChart, trendChart, editingId = null, contributingGoalId = null;
+let recurringChecked = false;
+
+/* ---------------- Auth guard ---------------- */
+
+auth.onAuthStateChanged((user) => {
+  if (!user) { window.location.href = "login.html"; return; }
+  $("user-email").textContent = user.email;
+  $("app-screen").hidden = false;
+  startListeners();
+});
+
+$("logout-btn").addEventListener("click", () => auth.signOut());
+
+/* ---------------- Firestore listeners ---------------- */
+
+let unsubTx, unsubBudgets, unsubRecurring, unsubGoals;
+
+function startListeners() {
+  unsubTx = db.collection("transactions").orderBy("date", "desc").onSnapshot((snap) => {
+    allTransactions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    ensureMonthOptions();
+    renderAll();
+    maybeRunRecurringCheck();
+  });
+  unsubBudgets = db.collection("budgets").onSnapshot((snap) => {
+    allBudgets = {}; snap.docs.forEach((d) => { allBudgets[d.data().category] = d.data().limit; });
+    renderBudgets();
+  });
+  unsubRecurring = db.collection("recurring").onSnapshot((snap) => {
+    allRecurring = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderRecurring();
+    maybeRunRecurringCheck();
+  });
+  unsubGoals = db.collection("goals").onSnapshot((snap) => {
+    allGoals = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderGoals();
+  });
+}
+
+/* ---------------- Category selects ---------------- */
+
+function refreshEntryCategories() { fillSelect($("category"), currentType === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES); }
+function refreshRecurringCategories() { fillSelect($("recurring-category"), recCurrentType === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES); }
+
+[$("type-expense"), $("type-income")].forEach((btn) => btn.addEventListener("click", () => {
+  currentType = btn.dataset.type;
+  $("type-expense").classList.toggle("active", currentType === "expense");
+  $("type-income").classList.toggle("active", currentType === "income");
+  refreshEntryCategories();
+}));
+
+[$("rec-type-expense"), $("rec-type-income")].forEach((btn) => btn.addEventListener("click", () => {
+  recCurrentType = btn.dataset.type;
+  $("rec-type-expense").classList.toggle("active", recCurrentType === "expense");
+  $("rec-type-income").classList.toggle("active", recCurrentType === "income");
+  refreshRecurringCategories();
+}));
+
+$("entry-date").valueAsDate = new Date();
+refreshEntryCategories();
+refreshRecurringCategories();
+fillSelect($("budget-category"), EXPENSE_CATEGORIES);
+fillSelect($("edit-category"), ALL_CATEGORIES);
+fillSelect($("filter-category"), ALL_CATEGORIES);
+$("filter-category").insertAdjacentHTML("afterbegin", `<option value="">All categories</option>`);
+$("filter-category").value = "";
+
+/* ---------------- Add entry ---------------- */
+
+$("entry-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const amount = parseFloat($("amount").value);
+  if (!amount || amount <= 0) return;
+  await db.collection("transactions").add({
+    type: currentType, amount, category: $("category").value, date: $("entry-date").value,
+    note: $("note").value.trim(), createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  $("entry-form").reset();
+  $("entry-date").valueAsDate = new Date();
+  refreshEntryCategories();
+});
+
+/* ---------------- Month selector ---------------- */
+
+function ensureMonthOptions() {
+  const months = new Set(allTransactions.map((t) => t.date.slice(0, 7)));
+  months.add(thisMonthStr());
+  const sorted = Array.from(months).sort().reverse();
+  if (!selectedMonth) selectedMonth = thisMonthStr();
+  const select = $("month-select");
+  select.innerHTML = sorted.map((m) => `<option value="${m}">${monthLabel(m)}</option>`).join("");
+  select.value = sorted.includes(selectedMonth) ? selectedMonth : sorted[0];
+  selectedMonth = select.value;
+}
+$("month-select").addEventListener("change", (e) => { selectedMonth = e.target.value; renderAll(); });
+
+/* ---------------- Rendering ---------------- */
+
+function renderAll() { renderSummary(); renderHistory(); renderBudgets(); renderCharts(); renderInsights(); }
+
+function monthTransactions(ym) { return allTransactions.filter((t) => t.date.slice(0, 7) === ym); }
+
+function renderSummary() {
+  const monthTx = monthTransactions(selectedMonth);
+  const income = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const expenses = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const balance = allTransactions.reduce((s, t) => s + (t.type === "income" ? t.amount : -t.amount), 0);
+  $("summary-income").textContent = money(income);
+  $("summary-expenses").textContent = money(expenses);
+  $("summary-balance").textContent = money(balance);
+  $("summary-balance").classList.toggle("negative", balance < 0);
+}
+
+/* ---------------- Filters + history ---------------- */
+
+["filter-search", "filter-category", "filter-from", "filter-to"].forEach((id) => {
+  $(id).addEventListener("input", renderHistory);
+});
+$("filter-clear").addEventListener("click", () => {
+  $("filter-search").value = ""; $("filter-category").value = ""; $("filter-from").value = ""; $("filter-to").value = "";
+  renderHistory();
+});
+
+function filteredEntries() {
+  const search = $("filter-search").value.trim().toLowerCase();
+  const cat = $("filter-category").value;
+  const from = $("filter-from").value, to = $("filter-to").value;
+  let list = (from || to)
+    ? allTransactions.filter((t) => (!from || t.date >= from) && (!to || t.date <= to))
+    : monthTransactions(selectedMonth);
+  if (cat) list = list.filter((t) => t.category === cat);
+  if (search) list = list.filter((t) => (t.note || "").toLowerCase().includes(search) || t.category.toLowerCase().includes(search));
+  return list;
+}
+
+function renderHistory() {
+  const entries = filteredEntries();
+  const body = $("history-body");
+  $("history-count").textContent = entries.length ? `${entries.length} entr${entries.length === 1 ? "y" : "ies"}` : "";
+  if (!entries.length) {
+    body.innerHTML = `<tr id="history-empty"><td colspan="5" class="muted">No entries match.</td></tr>`;
+    return;
+  }
+  body.innerHTML = entries.map((t) => `
+    <tr>
+      <td>${formatDate(t.date)}</td>
+      <td><span class="cat-dot" style="background:${CATEGORY_COLORS[t.category] || "#7A7A72"}"></span>${t.category}</td>
+      <td class="muted">${t.note || ""}</td>
+      <td class="num ${t.type}">${t.type === "income" ? "+" : "−"}${money(t.amount).replace("-", "")}</td>
+      <td class="row-actions">
+        <button class="icon-btn edit-btn" data-id="${t.id}">Edit</button>
+        <button class="icon-btn delete-btn" data-id="${t.id}">Delete</button>
+      </td>
+    </tr>`).join("");
+  body.querySelectorAll(".delete-btn").forEach((b) => b.addEventListener("click", () => deleteEntry(b.dataset.id)));
+  body.querySelectorAll(".edit-btn").forEach((b) => b.addEventListener("click", () => openEditDialog(b.dataset.id)));
+}
+
+function formatDate(iso) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
+
+async function deleteEntry(id) { if (confirm("Delete this entry? This can't be undone.")) await db.collection("transactions").doc(id).delete(); }
+
+/* ---------------- Edit dialog ---------------- */
+
+function openEditDialog(id) {
+  const t = allTransactions.find((x) => x.id === id);
+  if (!t) return;
+  editingId = id;
+  $("edit-amount").value = t.amount; $("edit-category").value = t.category;
+  $("edit-date").value = t.date; $("edit-note").value = t.note || "";
+  $("edit-dialog").showModal();
+}
+$("edit-cancel").addEventListener("click", () => $("edit-dialog").close());
+$("edit-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!editingId) return;
+  await db.collection("transactions").doc(editingId).update({
+    amount: parseFloat($("edit-amount").value), category: $("edit-category").value,
+    date: $("edit-date").value, note: $("edit-note").value.trim()
+  });
+  editingId = null; $("edit-dialog").close();
+});
+
+/* ---------------- Budgets ---------------- */
+
+$("add-budget-btn").addEventListener("click", () => $("budget-dialog").showModal());
+$("budget-cancel").addEventListener("click", () => $("budget-dialog").close());
+$("budget-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const category = $("budget-category").value, limit = parseFloat($("budget-limit").value);
+  await db.collection("budgets").doc(category).set({ category, limit });
+  $("budget-form").reset(); $("budget-dialog").close();
+});
+
+function renderBudgets() {
+  const spentByCategory = {};
+  monthTransactions(selectedMonth).filter((t) => t.type === "expense").forEach((t) => { spentByCategory[t.category] = (spentByCategory[t.category] || 0) + t.amount; });
+  const categories = Object.keys(allBudgets);
+  const list = $("budgets-list");
+  if (!categories.length) { list.innerHTML = `<p class="muted">No limits set yet.</p>`; return; }
+  list.innerHTML = categories.map((cat) => {
+    const limit = allBudgets[cat], spent = spentByCategory[cat] || 0;
+    const pct = limit > 0 ? Math.min(100, (spent / limit) * 100) : 0, over = spent > limit;
+    return `<div class="budget-row"><div class="budget-row-top"><span>${cat}</span><span class="${over ? "negative" : "muted"}">${money(spent)} of ${money(limit)}</span></div>
+      <div class="budget-bar"><div class="budget-bar-fill ${over ? "over" : ""}" style="width:${pct}%"></div></div></div>`;
+  }).join("");
+}
+
+/* ---------------- Recurring ---------------- */
+
+$("add-recurring-btn").addEventListener("click", () => $("recurring-dialog").showModal());
+$("recurring-cancel").addEventListener("click", () => $("recurring-dialog").close());
+$("recurring-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await db.collection("recurring").add({
+    description: $("recurring-desc").value.trim(), category: $("recurring-category").value,
+    type: recCurrentType, amount: parseFloat($("recurring-amount").value),
+    day: parseInt($("recurring-day").value, 10), active: true, lastGeneratedMonth: null
+  });
+  $("recurring-form").reset(); $("recurring-dialog").close();
+});
+
+function renderRecurring() {
+  const list = $("recurring-list");
+  if (!allRecurring.length) { list.innerHTML = `<p class="muted">No recurring entries yet.</p>`; return; }
+  list.innerHTML = allRecurring.map((r) => `
+    <div class="recurring-row">
+      <div>
+        <span class="${r.active ? "" : "muted"}">${r.description}</span>
+        <span class="muted"> — ${r.category}, day ${r.day}</span>
+      </div>
+      <div class="recurring-row-right">
+        <span class="${r.type}">${r.type === "income" ? "+" : "−"}${money(r.amount).replace("-", "")}</span>
+        <button class="icon-btn toggle-rec" data-id="${r.id}" data-active="${r.active}">${r.active ? "Pause" : "Resume"}</button>
+        <button class="icon-btn delete-rec" data-id="${r.id}">Delete</button>
+      </div>
+    </div>`).join("");
+  list.querySelectorAll(".toggle-rec").forEach((b) => b.addEventListener("click", () => db.collection("recurring").doc(b.dataset.id).update({ active: b.dataset.active !== "true" })));
+  list.querySelectorAll(".delete-rec").forEach((b) => b.addEventListener("click", () => { if (confirm("Delete this recurring entry?")) db.collection("recurring").doc(b.dataset.id).delete(); }));
+}
+
+function maybeRunRecurringCheck() {
+  if (recurringChecked || !allRecurring.length) return;
+  if (!allTransactions && allTransactions.length === 0) return;
+  recurringChecked = true;
+  runRecurringCheck();
+}
+
+async function runRecurringCheck() {
+  const ym = thisMonthStr();
+  const dayOfMonth = new Date().getDate();
+  for (const rec of allRecurring) {
+    if (!rec.active) continue;
+    if (rec.lastGeneratedMonth === ym) continue;
+    if (dayOfMonth < rec.day) continue;
+    await db.collection("transactions").add({
+      type: rec.type, amount: rec.amount, category: rec.category,
+      date: `${ym}-${String(rec.day).padStart(2, "0")}`, note: `${rec.description} (recurring)`,
+      recurringId: rec.id, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    await db.collection("recurring").doc(rec.id).update({ lastGeneratedMonth: ym });
+  }
+}
+
+/* ---------------- Goals ---------------- */
+
+$("add-goal-btn").addEventListener("click", () => $("goal-dialog").showModal());
+$("goal-cancel").addEventListener("click", () => $("goal-dialog").close());
+$("goal-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await db.collection("goals").add({ name: $("goal-name").value.trim(), target: parseFloat($("goal-target").value), saved: 0 });
+  $("goal-form").reset(); $("goal-dialog").close();
+});
+
+$("contribute-cancel").addEventListener("click", () => $("contribute-dialog").close());
+$("contribute-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const amt = parseFloat($("contribute-amount").value);
+  if (contributingGoalId && amt > 0) {
+    await db.collection("goals").doc(contributingGoalId).update({ saved: firebase.firestore.FieldValue.increment(amt) });
+  }
+  $("contribute-form").reset(); $("contribute-dialog").close();
+});
+
+function renderGoals() {
+  const list = $("goals-list");
+  if (!allGoals.length) { list.innerHTML = `<p class="muted">No savings goals yet.</p>`; return; }
+  list.innerHTML = allGoals.map((g) => {
+    const pct = g.target > 0 ? Math.min(100, (g.saved / g.target) * 100) : 0;
+    const reached = g.saved >= g.target;
+    return `<div class="budget-row">
+      <div class="budget-row-top"><span>${g.name}</span><span class="${reached ? "income" : "muted"}">${money(g.saved)} of ${money(g.target)}</span></div>
+      <div class="budget-bar"><div class="budget-bar-fill ${reached ? "" : ""}" style="width:${pct}%;background:var(--brass)"></div></div>
+      <div class="goal-actions">
+        <button class="icon-btn add-funds" data-id="${g.id}">+ Add funds</button>
+        <button class="icon-btn delete-goal" data-id="${g.id}">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+  list.querySelectorAll(".add-funds").forEach((b) => b.addEventListener("click", () => { contributingGoalId = b.dataset.id; $("contribute-dialog").showModal(); }));
+  list.querySelectorAll(".delete-goal").forEach((b) => b.addEventListener("click", () => { if (confirm("Delete this goal?")) db.collection("goals").doc(b.dataset.id).delete(); }));
+}
+
+/* ---------------- Insights ---------------- */
+
+function renderInsights() {
+  const cur = monthTransactions(selectedMonth).filter((t) => t.type === "expense");
+  const prev = monthTransactions(prevMonthStr(selectedMonth)).filter((t) => t.type === "expense");
+  const curTotals = {}, prevTotals = {};
+  cur.forEach((t) => { curTotals[t.category] = (curTotals[t.category] || 0) + t.amount; });
+  prev.forEach((t) => { prevTotals[t.category] = (prevTotals[t.category] || 0) + t.amount; });
+  const cats = new Set([...Object.keys(curTotals), ...Object.keys(prevTotals)]);
+  const rows = [];
+  cats.forEach((cat) => {
+    const c = curTotals[cat] || 0, p = prevTotals[cat] || 0;
+    if (c === 0 && p === 0) return;
+    let text, cls;
+    if (p === 0) { text = `${cat} is new this month at ${money(c)}.`; cls = "expense"; }
+    else {
+      const pct = Math.round(((c - p) / p) * 100);
+      if (pct === 0) { text = `${cat} is flat at ${money(c)}.`; cls = "muted"; }
+      else if (pct > 0) { text = `${cat} is up ${pct}% — from ${money(p)} to ${money(c)}.`; cls = "expense"; }
+      else { text = `${cat} is down ${Math.abs(pct)}% — from ${money(p)} to ${money(c)}.`; cls = "income"; }
+    }
+    rows.push({ delta: Math.abs(c - p), text, cls });
+  });
+  rows.sort((a, b) => b.delta - a.delta);
+  const list = $("insights-list");
+  list.innerHTML = rows.length
+    ? rows.slice(0, 5).map((r) => `<p class="insight-row ${r.cls}">${r.text}</p>`).join("")
+    : `<p class="muted">Add a few expenses to start seeing insights.</p>`;
+}
+
+/* ---------------- Charts ---------------- */
+
+function renderCharts() { renderCategoryChart(); renderTrendChart(); }
+
+function renderCategoryChart() {
+  const totals = {};
+  monthTransactions(selectedMonth).filter((t) => t.type === "expense").forEach((t) => { totals[t.category] = (totals[t.category] || 0) + t.amount; });
+  const labels = Object.keys(totals), data = Object.values(totals);
+  const colors = labels.map((l) => CATEGORY_COLORS[l] || "#7A7A72");
+  if (categoryChart) categoryChart.destroy();
+  const ctx = $("category-chart").getContext("2d");
+  ctx.canvas.parentElement.querySelectorAll(".empty-note").forEach((n) => n.remove());
+  if (!labels.length) { drawEmptyState(ctx, "No expenses recorded yet"); return; }
+  categoryChart = new Chart(ctx, { type: "doughnut", data: { labels, datasets: [{ data, backgroundColor: colors, borderColor: "#EDEEE9", borderWidth: 2 }] },
+    options: { plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { family: "IBM Plex Sans", size: 11 } } } }, cutout: "62%" } });
+}
+
+function lastNMonths(n, endYm) {
+  const [y, m] = endYm.split("-").map(Number); const months = [];
+  for (let i = n - 1; i >= 0; i--) { const d = new Date(y, m - 1 - i, 1); months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); }
+  return months;
+}
+
+function renderTrendChart() {
+  const months = lastNMonths(6, selectedMonth);
+  const income = months.map((ym) => monthTransactions(ym).filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0));
+  const expense = months.map((ym) => monthTransactions(ym).filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0));
+  if (trendChart) trendChart.destroy();
+  const ctx = $("trend-chart").getContext("2d");
+  trendChart = new Chart(ctx, {
+    type: "bar",
+    data: { labels: months.map((m) => monthLabel(m).split(" ")[0].slice(0, 3)), datasets: [{ label: "Income", data: income, backgroundColor: "#5B8A6E" }, { label: "Expenses", data: expense, backgroundColor: "#A34A32" }] },
+    options: { plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { family: "IBM Plex Sans", size: 11 } } } }, scales: { y: { beginAtZero: true, ticks: { font: { family: "IBM Plex Sans", size: 10 } } }, x: { ticks: { font: { family: "IBM Plex Sans", size: 10 } } } } }
+  });
+}
+
+function drawEmptyState(ctx, text) {
+  const note = document.createElement("p");
+  note.className = "muted empty-note"; note.style.textAlign = "center"; note.style.paddingTop = "70px"; note.textContent = text;
+  ctx.canvas.parentElement.appendChild(note);
+}
