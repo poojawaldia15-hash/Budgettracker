@@ -35,8 +35,13 @@ const thisMonthStr = () => new Date().toISOString().slice(0, 7);
 
 /* ---------------- Auth ---------------- */
 
+// Prefill the email field with the shared address so people don't have
+// to remember it — they can still edit it, but the default is correct.
+$("email").value = SHARED_LOGIN_EMAIL;
+
 $("login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const email = $("email").value.trim();
   const password = $("password").value;
   const btn = $("login-btn");
   const errorEl = $("login-error");
@@ -44,9 +49,9 @@ $("login-form").addEventListener("submit", async (e) => {
   btn.disabled = true;
   btn.textContent = "Opening…";
   try {
-    await auth.signInWithEmailAndPassword(SHARED_LOGIN_EMAIL, password);
+    await auth.signInWithEmailAndPassword(email, password);
   } catch (err) {
-    errorEl.textContent = "That password didn't work. Try again.";
+    errorEl.textContent = "That email or password didn't work. Try again.";
     errorEl.hidden = false;
   } finally {
     btn.disabled = false;
